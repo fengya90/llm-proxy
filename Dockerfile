@@ -1,6 +1,9 @@
-FROM scratch
+FROM alpine
 
-COPY target/x86_64-unknown-linux-musl/release/llm-proxy /llm-proxy
+RUN apk add --no-cache tzdata ca-certificates \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone
+
 
 EXPOSE 8080
 
