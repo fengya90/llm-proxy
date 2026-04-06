@@ -18,7 +18,7 @@ use crate::AppState;
 // Request conversion: Anthropic → OpenAI
 // ============================================================
 
-fn convert_request(req: AnthropicRequest, model_override: Option<&str>, max_tokens_cap: Option<u32>) -> OpenAIRequest {
+fn convert_request(req: AnthropicRequest, model_map: &std::collections::HashMap<String, String>, max_tokens_cap: Option<u32>) -> OpenAIRequest {
     let mut messages: Vec<OpenAIMessage> = Vec::new();
 
     // Convert system prompt to a system message
@@ -72,8 +72,9 @@ fn convert_request(req: AnthropicRequest, model_override: Option<&str>, max_toke
     let is_stream = req.stream.unwrap_or(false);
 
     OpenAIRequest {
-        model: model_override
-            .map(|s| s.to_string())
+        model: model_map
+            .get(&req.model)
+            .cloned()
             .unwrap_or(req.model),
         messages,
         max_tokens: Some(match max_tokens_cap {
@@ -654,7 +655,7 @@ pub async fn anthropic_handler(
     // Convert to OpenAI format
     let openai_req = convert_request(
         anthropic_req,
-        state.model_override.as_ref().map(|s| s.as_str()),
+        &state.model_map,
         state.max_tokens_cap,
     );
     let openai_body = serde_json::to_vec(&openai_req).map_err(|e| {

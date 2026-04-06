@@ -10,6 +10,7 @@ use axum::{
 };
 use clap::Parser;
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -44,9 +45,9 @@ struct Args {
     #[arg(long, env = "PROXY_API_KEYS", value_delimiter = ',')]
     proxy_api_keys: Vec<String>,
 
-    /// Anthropic 转换时覆盖模型名（如不指定，则透传客户端请求中的 model）
-    #[arg(long, env = "MODEL_OVERRIDE")]
-    model_override: Option<String>,
+    /// 模型映射表（格式: src1=dst1,src2=dst2；未匹配则透传）
+    #[arg(long, env = "MODEL_MAP", value_delimiter = ',')]
+    model_map: Vec<String>,
 
     /// Anthropic 转换时对 max_tokens 的上限约束（不指定则透传原始值）
     #[arg(long, env = "MAX_TOKENS_CAP")]
@@ -60,7 +61,7 @@ pub struct AppState {
     pub api_key: Arc<String>,
     pub proxy_api_keys: Arc<Vec<String>>,
     pub auth_enabled: bool,
-    pub model_override: Option<Arc<String>>,
+    pub model_map: Arc<HashMap<String, String>>,
     pub max_tokens_cap: Option<u32>,
 }
 
@@ -89,13 +90,22 @@ async fn main() {
 
     let auth_enabled = !args.proxy_api_keys.is_empty();
 
+    let model_map: HashMap<String, String> = args
+        .model_map
+        .iter()
+        .filter_map(|entry| {
+            let (k, v) = entry.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().to_string()))
+        })
+        .collect();
+
     let state = AppState {
         client: Arc::new(client),
         upstream_url: Arc::new(args.upstream_url.clone()),
         api_key: Arc::new(args.api_key.clone()),
         proxy_api_keys: Arc::new(args.proxy_api_keys.clone()),
         auth_enabled,
-        model_override: args.model_override.as_ref().map(|s| Arc::new(s.clone())),
+        model_map: Arc::new(model_map),
         max_tokens_cap: args.max_tokens_cap,
     };
 
@@ -104,19 +114,12 @@ async fn main() {
         .allow_headers(Any)
         .allow_origin(Any);
 
-    let app = Router::new()
-        .route(&openai_path, post(proxy::proxy_handler))
-        .route(&anthropic_path, post(anthropic::anthropic_handler))
-        .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
-
     info!("LLM Proxy 启动，监听 {}", listen);
     info!("  OpenAI    端点: {}{}", listen, openai_path);
     info!("  Anthropic 端点: {}{}", listen, anthropic_path);
     info!("上游地址: {}", args.upstream_url);
-    if let Some(ref model) = args.model_override {
-        info!("模型覆盖: {}", model);
+    if !state.model_map.is_empty() {
+        info!("模型映射: {:?}", *state.model_map);
     }
     if let Some(cap) = args.max_tokens_cap {
         info!("max_tokens 上限: {}", cap);
@@ -126,6 +129,13 @@ async fn main() {
     } else {
         info!("鉴权模式: 关闭（无需客户端 API Key）");
     }
+
+    let app = Router::new()
+        .route(&openai_path, post(proxy::proxy_handler))
+        .route(&anthropic_path, post(anthropic::anthropic_handler))
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(listen)
         .await
